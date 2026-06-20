@@ -8,8 +8,11 @@ Requirements:
 Run:
     streamlit run aws_dashboard.py
 
-Auth: standard AWS credential chain (env vars, ~/.aws/credentials, SSO,
-instance role). Pick a profile in the sidebar if you use named profiles.
+Auth: choose in the sidebar between (a) a named AWS CLI profile from your
+standard credential chain (~/.aws/credentials, SSO, instance role), or
+(b) entering an Access Key ID / Secret Access Key directly. Keys entered
+in the sidebar stay in memory for the session only and are never written
+to disk by this script.
 Read-only — no resources are created, modified, or deleted.
 """
 
@@ -46,9 +49,14 @@ def warn_if_error(err):
 
 
 @st.cache_resource(show_spinner=False)
-def get_session(profile, region):
+def get_session(profile, region, access_key=None, secret_key=None, session_token=None):
     kwargs = {}
-    if profile and profile != "default":
+    if access_key and secret_key:
+        kwargs["aws_access_key_id"] = access_key
+        kwargs["aws_secret_access_key"] = secret_key
+        if session_token:
+            kwargs["aws_session_token"] = session_token
+    elif profile and profile != "default":
         kwargs["profile_name"] = profile
     if region:
         kwargs["region_name"] = region
@@ -326,21 +334,41 @@ def fetch_cost(_session):
 # ---------- sidebar ----------
 
 st.sidebar.title("☁️ AWS Dashboard")
-profile = st.sidebar.text_input("AWS profile", value="default")
+
+auth_method = st.sidebar.radio("Authentication", ["AWS CLI profile", "Access key / secret key"])
+
+profile = "default"
+access_key = secret_key = session_token = None
+
+if auth_method == "AWS CLI profile":
+    profile = st.sidebar.text_input("AWS profile", value="default")
+else:
+    access_key = st.sidebar.text_input("AWS Access Key ID", type="password")
+    secret_key = st.sidebar.text_input("AWS Secret Access Key", type="password")
+    session_token = st.sidebar.text_input("Session token (optional)", type="password",
+                                           help="Only needed for temporary/STS credentials")
+
 region = st.sidebar.text_input("Region", value="eu-central-1")
+
 if st.sidebar.button("🔄 Refresh", use_container_width=True):
     st.cache_data.clear()
     st.cache_resource.clear()
-st.sidebar.caption("Read-only. Uses your local AWS credential chain.")
+
+st.sidebar.caption("Read-only. Keys are kept in memory for this session only — never written to disk.")
+
+if auth_method == "Access key / secret key" and not (access_key and secret_key):
+    st.info("Enter your AWS Access Key ID and Secret Access Key in the sidebar to continue.")
+    st.stop()
 
 try:
-    session = get_session(profile, region)
+    session = get_session(profile, region, access_key, secret_key, session_token)
 except Exception as e:
     st.error(f"Failed to create session: {e}")
     st.stop()
 
 st.title("AWS Environment Overview")
-st.caption(f"Profile: `{profile}` · Region: `{region}` · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+auth_label = profile if auth_method == "AWS CLI profile" else "access key"
+st.caption(f"Auth: `{auth_label}` · Region: `{region}` · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
 
 try:
     ident, iam_summary, e1, e2 = fetch_account(session)
